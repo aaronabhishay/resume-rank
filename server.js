@@ -85,6 +85,9 @@ try {
   console.error('Error initializing Gemini API:', error);
 }
 
+// Hard code the parent folder ID
+const PARENT_FOLDER_ID = "1iDXkG-Ox2VoBToGX1BipoOjcYSMQQpVF"; // Parent folder containing Data Analyst and Software Engineer subfolders
+
 // Rest of your code remains the same
 async function extractFolderId(url) {
   const match = url.match(/folders\/([a-zA-Z0-9-_]+)/);
@@ -123,37 +126,47 @@ async function downloadAndParseResume(fileId) {
 
 async function analyzeResume(resumeText, jobDescription) {
   if (!genAI) {
-    throw new Error('Gemini API not initialized');
+    throw new Error('Gemini AI not initialized');
   }
-  
-  console.log('Creating Gemini 1.5 Flash model...');
-  
-  // Create the Gemini 1.5 Flash model with optimal configuration
+
   const model = genAI.getGenerativeModel({ 
-    model: "gemini-1.5-flash",  // Using the faster, more cost-effective model
-    // Optional configuration parameters
+    model: "gemini-1.5-flash",
     generationConfig: {
-      temperature: 0.4,         // Lower temperature for more consistent results
-      topP: 0.8,                // Controls diversity of responses
-      topK: 40,                 // Another parameter for controlling diversity
-      maxOutputTokens: 2048,    // Limit the response length
+      temperature: 0.2,         // Lower temperature for more consistent output
+      topP: 0.8,
+      topK: 40,
+      maxOutputTokens: 2048,
     }
   });
-  
-  console.log('Successfully created gemini-1.5-flash model');
-  
+
   const prompt = `
-    You are a professional resume analyzer. Analyze this resume against the following job description and provide detailed scores (0-10) for:
+    You are a professional resume analyzer. First, extract the candidate's name and email address from the resume text. For the name, look for patterns like:
+    - "Name:", "Candidate:", or similar labels followed by a name
+    - The first non-empty line at the top of the resume
+    - A name in the contact section or header
+    For the email, look for:
+    - "Email:", "E-mail:", "Contact:", followed by an email address
+    - Common email patterns like "name@domain.com"
+    - Email addresses in contact sections or headers
     
+    Then analyze this resume against the following job description and provide detailed scores (0-10) for:
     1. Skills Match: How well do the candidate's technical and soft skills align with the job requirements?
     2. Experience Relevance: How relevant is their work experience to the role?
     3. Education Fit: How well does their educational background match the position?
     4. Project Impact: How impactful and relevant are their projects to the role?
     
+    IMPORTANT: Use the full 0-10 range for each score. Be strict and competitive:
+    - Only give 9-10 for truly exceptional, perfect matches.
+    - Give 7-8 for strong but not perfect matches.
+    - Give 5-6 for average or partial matches.
+    - Give 3-4 for weak matches.
+    - Give 0-2 for poor or missing fit.
+    Do NOT cluster all candidates at the top. Make sure scores reflect real differences in fit to the job description, and penalize missing or irrelevant experience, skills, or education.
+    
     Also provide:
     - 3 key strengths that make this candidate a good fit
     - Areas for improvement
-    - Overall match percentage (still on a scale of 0-100)
+    - A detailed analysis of the candidate's fit for the role
     
     Job Description:
     ${jobDescription}
@@ -163,15 +176,21 @@ async function analyzeResume(resumeText, jobDescription) {
     
     IMPORTANT: Respond with a raw JSON object, not wrapped in markdown code blocks or any other formatting. The JSON should start with { and end with }. The entire response should be valid JSON:
     {
+      "candidateName": string (the extracted candidate name, or "No name found" if none found),
+      "email": string (the extracted email address, or "No email found" if none found),
       "skillsMatch": number (0-10),
       "experienceRelevance": number (0-10),
       "educationFit": number (0-10),
       "projectImpact": number (0-10),
       "keyStrengths": string[],
       "areasForImprovement": string[],
-      "totalScore": number (0-100),
       "analysis": string
     }
+    
+    Note: For the name and email fields, make sure to:
+    1. Extract the complete name/email if found
+    2. Return "No name found" or "No email found" if not found
+    3. Do not include any explanatory text, just the value or "No ... found"
   `;
 
   try {
@@ -215,6 +234,19 @@ async function analyzeResume(resumeText, jobDescription) {
     try {
       const parsedJson = JSON.parse(cleanedText);
       console.log('Successfully parsed JSON response with these keys:', Object.keys(parsedJson).join(', '));
+      
+      // Calculate total score using a weighted formula
+      // Weights: Skills (35%), Experience (35%), Education (15%), Projects (15%)
+      const totalScore = (
+        (parsedJson.skillsMatch * 0.35) +
+        (parsedJson.experienceRelevance * 0.35) +
+        (parsedJson.educationFit * 0.15) +
+        (parsedJson.projectImpact * 0.15)
+      ) * 10; // Convert to 0-100 scale
+      
+      // Round to 1 decimal place
+      parsedJson.totalScore = Math.round(totalScore * 10) / 10;
+      
       return parsedJson;
     } catch (parseError) {
       console.error('Error parsing JSON response:', parseError);
@@ -223,7 +255,6 @@ async function analyzeResume(resumeText, jobDescription) {
     }
   } catch (error) {
     console.error('Error analyzing resume:', error);
-    // Don't catch and wrap the error - let it bubble up with its original message
     throw error;
   }
 }
@@ -289,6 +320,7 @@ app.post('/api/analyze', async (req, res) => {
               areas_for_improvement: analysis.areasForImprovement,
               total_score: analysis.totalScore,
               analysis_text: analysis.analysis,
+              email: analysis.email,
               created_at: timestamp
             };
             
@@ -363,6 +395,58 @@ app.post('/api/analyze', async (req, res) => {
   }
 });
 
+// n8n API endpoints
+app.post('/api/n8n/create-calendar-events', async (req, res) => {
+  try {
+    const { events } = req.body;
+    console.log('Events being sent to n8n:', JSON.stringify(events, null, 2));
+    
+    // Call n8n webhook for calendar events
+    const response = await fetch(process.env.N8N_CALENDAR_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ events }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to create calendar events');
+    }
+
+    const result = await response.json();
+    res.json(result);
+  } catch (error) {
+    console.error('Error creating calendar events:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/n8n/send-rejection-emails', async (req, res) => {
+  try {
+    const { recipients, subject, body } = req.body;
+    
+    // Call n8n webhook for sending emails
+    const response = await fetch(process.env.N8N_EMAIL_WEBHOOK_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ recipients, subject, body }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to send rejection emails');
+    }
+
+    const result = await response.json();
+    res.json(result);
+  } catch (error) {
+    console.error('Error sending rejection emails:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Add a test endpoint
 app.get('/api/test', (req, res) => {
   res.json({ 
@@ -370,6 +454,72 @@ app.get('/api/test', (req, res) => {
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
   });
+});
+
+// Save a job result
+app.post('/api/save-job', async (req, res) => {
+  const { jobTitle, results } = req.body;
+  if (!jobTitle || !results) {
+    return res.status(400).json({ error: 'Missing jobTitle or results' });
+  }
+  try {
+    const { data, error } = await supabase
+      .from('saved_jobs')
+      .insert([{ job_title: jobTitle, results }])
+      .select();
+    if (error) throw error;
+    res.json({ success: true, job: data[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get all saved jobs
+app.get('/api/saved-jobs', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('saved_jobs')
+      .select('id, job_title, created_at');
+    if (error) throw error;
+    res.json({ jobs: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get a single saved job by ID
+app.get('/api/saved-jobs/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { data, error } = await supabase
+      .from('saved_jobs')
+      .select('id, job_title, created_at, results')
+      .eq('id', id)
+      .single();
+    if (error) throw error;
+    res.json({ job: data });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Add new endpoint to fetch subfolders
+app.get('/api/drive-folders', async (req, res) => {
+  try {
+    if (!drive) {
+      throw new Error('Google Drive API not initialized');
+    }
+
+    const response = await drive.files.list({
+      q: `'${PARENT_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder'`,
+      fields: 'files(id, name)',
+    });
+
+    res.json(response.data.files);
+  } catch (error) {
+    console.error('Error fetching subfolders:', error);
+    res.status(500).json({ error: 'Failed to fetch subfolders' });
+  }
 });
 
 const PORT = process.env.PORT || 5000;
