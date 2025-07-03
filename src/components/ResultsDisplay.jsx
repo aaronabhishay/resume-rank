@@ -527,7 +527,7 @@ export default function ResultsDisplay({ results, jobTitle, canSave = true }) {
     setLoadingAddAll(true);
     try {
       // First create the calendar events
-      const calendarResponse = await fetch('/api/n8n/create-calendar-events', {
+      const calendarResponse = await fetch('https://resume-rank.onrender.com/api/n8n/create-calendar-events', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
